@@ -18,6 +18,13 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Prevent UnicodeEncodeError on Windows terminals
+if sys.platform.startswith('win'):
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
+
 
 def check_day18_files() -> bool:
     required = [
@@ -109,6 +116,14 @@ def main():
     if not check_day18_files():
         sys.exit(1)
 
+    print("\nWarming up dense embedding model (BAAI/bge-m3)...")
+    from sentence_transformers import SentenceTransformer
+    try:
+        SentenceTransformer("BAAI/bge-m3")
+        print("  ✓ Model warmed up successfully")
+    except Exception as e:
+        print(f"  [WARN] Failed to warm up model: {e}")
+
     with open("test_set_50q.json", encoding="utf-8") as f:
         test_set = json.load(f)
     print(f"✓ Loaded {len(test_set)} questions (factual/multi_hop/adversarial)")
@@ -147,4 +162,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+

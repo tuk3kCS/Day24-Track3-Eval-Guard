@@ -1,5 +1,57 @@
 from __future__ import annotations
 
+# Monkeypatch asyncio and anyio to prevent RuntimeError: Timeout should be used inside a task
+try:
+    import asyncio
+    orig_current_task = asyncio.current_task
+    _dummy_task = None
+    try:
+        main_loop = asyncio.get_event_loop()
+    except RuntimeError:
+        main_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(main_loop)
+
+    def patched_current_task(loop=None):
+        try:
+            task = orig_current_task(loop)
+        except RuntimeError:
+            task = None
+        if task is None:
+            global _dummy_task
+            if _dummy_task is None:
+                class DummyTask:
+                    def __init__(self):
+                        self._name = "DummyTask"
+                        self._state = "PENDING"
+                        self._must_cancel = False
+                    def done(self):
+                        return False
+                    def get_loop(self):
+                        return loop or main_loop
+                    def cancelling(self):
+                        return 0
+                    def uncancel(self):
+                        return 0
+                    def cancel(self, msg=None):
+                        return False
+                _dummy_task = DummyTask()
+            return _dummy_task
+        return task
+
+    asyncio.current_task = patched_current_task
+    try:
+        import asyncio.tasks
+        asyncio.tasks.current_task = patched_current_task
+    except Exception:
+        pass
+    try:
+        import anyio._backends._asyncio as ab
+        ab.current_task = patched_current_task
+    except Exception:
+        pass
+except Exception as e_patch:
+    print(f"  [WARN] Failed to patch asyncio.current_task globally: {e_patch}")
+
 """Phase A: RAGAS Production Evaluation — 50q, 3 distributions, cluster analysis."""
 
 import json
@@ -8,6 +60,8 @@ import sys
 from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
 from config import TEST_SET_PATH, ANSWERS_PATH
 
 Distribution = str  # "factual" | "multi_hop" | "adversarial"
@@ -110,12 +164,12 @@ def group_by_distribution(test_set: list[dict]) -> dict[str, list[dict]]:
     Returns:
         {"factual": [...], "multi_hop": [...], "adversarial": [...]}
     """
-    # TODO: Implement
-    # groups = {"factual": [], "multi_hop": [], "adversarial": []}
-    # for item in test_set:
-    #     groups[item["distribution"]].append(item)
-    # return groups
-    return {"factual": [], "multi_hop": [], "adversarial": []}
+    groups = {"factual": [], "multi_hop": [], "adversarial": []}
+    for item in test_set:
+        dist = item.get("distribution")
+        if dist in groups:
+            groups[dist].append(item)
+    return groups
 
 
 def run_ragas_50q(answers: list[dict]) -> list[RagasResult]:
@@ -130,32 +184,30 @@ def run_ragas_50q(answers: list[dict]) -> list[RagasResult]:
         3. Kết hợp kết quả với distribution info từ answers list
         4. Return list[RagasResult]
     """
-    # TODO: Implement
-    # try:
-    #     from src.m4_eval import evaluate_ragas
-    # except ImportError:
-    #     print("⚠️  Không tìm thấy src/m4_eval.py — đã copy từ Day 18 chưa?")
-    #     return []
-    #
-    # questions     = [a["question"]    for a in answers]
-    # ans_texts     = [a["answer"]      for a in answers]
-    # contexts      = [a["contexts"]    for a in answers]
-    # ground_truths = [a["ground_truth"] for a in answers]
-    #
-    # raw = evaluate_ragas(questions, ans_texts, contexts, ground_truths)
-    # per_q = raw.get("per_question", [])
-    #
-    # results = []
-    # for a, pq in zip(answers, per_q):
-    #     results.append(RagasResult(
-    #         question_id=a["id"], distribution=a["distribution"],
-    #         question=a["question"], answer=a["answer"],
-    #         contexts=a["contexts"], ground_truth=a["ground_truth"],
-    #         faithfulness=pq.faithfulness, answer_relevancy=pq.answer_relevancy,
-    #         context_precision=pq.context_precision, context_recall=pq.context_recall,
-    #     ))
-    # return results
-    return []
+    try:
+        from src.m4_eval import evaluate_ragas
+    except ImportError:
+        print("⚠️  Không tìm thấy src/m4_eval.py — đã copy từ Day 18 chưa?")
+        return []
+
+    questions     = [a["question"]    for a in answers]
+    ans_texts     = [a["answer"]      for a in answers]
+    contexts      = [a["contexts"]    for a in answers]
+    ground_truths = [a["ground_truth"] for a in answers]
+
+    raw = evaluate_ragas(questions, ans_texts, contexts, ground_truths)
+    per_q = raw.get("per_question", [])
+
+    results = []
+    for a, pq in zip(answers, per_q):
+        results.append(RagasResult(
+            question_id=a["id"], distribution=a["distribution"],
+            question=a["question"], answer=a["answer"],
+            contexts=a["contexts"], ground_truth=a["ground_truth"],
+            faithfulness=pq.faithfulness, answer_relevancy=pq.answer_relevancy,
+            context_precision=pq.context_precision, context_recall=pq.context_recall,
+        ))
+    return results
 
 
 def bottom_10(results: list[RagasResult]) -> list[dict]:
@@ -166,24 +218,22 @@ def bottom_10(results: list[RagasResult]) -> list[dict]:
           "question": ..., "avg_score": ..., "worst_metric": ...,
           "diagnosis": ..., "suggested_fix": ...}, ...]
     """
-    # TODO: Implement
-    # sorted_asc = sorted(results, key=lambda r: r.avg_score)
-    # bottom = sorted_asc[:10]
-    # output = []
-    # for i, r in enumerate(bottom):
-    #     diag, fix = DIAGNOSTIC_TREE[r.worst_metric]
-    #     output.append({
-    #         "rank": i + 1,
-    #         "question_id": r.question_id,
-    #         "distribution": r.distribution,
-    #         "question": r.question,
-    #         "avg_score": round(r.avg_score, 4),
-    #         "worst_metric": r.worst_metric,
-    #         "diagnosis": diag,
-    #         "suggested_fix": fix,
-    #     })
-    # return output
-    return []
+    sorted_asc = sorted(results, key=lambda r: r.avg_score)
+    bottom = sorted_asc[:10]
+    output = []
+    for i, r in enumerate(bottom):
+        diag, fix = DIAGNOSTIC_TREE[r.worst_metric]
+        output.append({
+            "rank": i + 1,
+            "question_id": r.question_id,
+            "distribution": r.distribution,
+            "question": r.question,
+            "avg_score": round(r.avg_score, 4),
+            "worst_metric": r.worst_metric,
+            "diagnosis": diag,
+            "suggested_fix": fix,
+        })
+    return output
 
 
 def cluster_analysis(results: list[RagasResult]) -> dict:
@@ -194,7 +244,7 @@ def cluster_analysis(results: list[RagasResult]) -> dict:
     Returns:
         {
           "matrix": {
-            "faithfulness":      {"factual": 3, "multi_hop": 5, "adversarial": 2},
+            "faithfulness":      {"factual": 0, "multi_hop": 0, "adversarial": 0},
             "answer_relevancy":  {...},
             "context_precision": {...},
             "context_recall":    {...},
@@ -204,30 +254,39 @@ def cluster_analysis(results: list[RagasResult]) -> dict:
           "insight": "..."
         }
     """
-    # TODO: Implement
-    # matrix = {
-    #     metric: {"factual": 0, "multi_hop": 0, "adversarial": 0}
-    #     for metric in DIAGNOSTIC_TREE
-    # }
-    # for r in results:
-    #     matrix[r.worst_metric][r.distribution] += 1
-    #
-    # # Find dominant failure
-    # dominant_dist   = max(["factual", "multi_hop", "adversarial"],
-    #                       key=lambda d: sum(matrix[m][d] for m in matrix))
-    # dominant_metric = max(matrix, key=lambda m: sum(matrix[m].values()))
-    # insight = (f"Distribution '{dominant_dist}' có nhiều failure nhất. "
-    #            f"Metric '{dominant_metric}' là điểm yếu chủ đạo. "
-    #            f"Gợi ý: {DIAGNOSTIC_TREE[dominant_metric][1]}")
-    #
-    # return {"matrix": matrix, "dominant_failure_distribution": dominant_dist,
-    #         "dominant_failure_metric": dominant_metric, "insight": insight}
-    return {}
+    matrix = {
+        metric: {"factual": 0, "multi_hop": 0, "adversarial": 0}
+        for metric in DIAGNOSTIC_TREE
+    }
+    for r in results:
+        matrix[r.worst_metric][r.distribution] += 1
+
+    # Find dominant failure
+    dominant_dist   = max(["factual", "multi_hop", "adversarial"],
+                          key=lambda d: sum(matrix[m][d] for m in matrix))
+    dominant_metric = max(matrix, key=lambda m: sum(matrix[m].values()))
+    insight = (f"Distribution '{dominant_dist}' có nhiều failure nhất. "
+               f"Metric '{dominant_metric}' là điểm yếu chủ đạo. "
+               f"Gợi ý: {DIAGNOSTIC_TREE[dominant_metric][1]}")
+
+    return {
+        "matrix": matrix, 
+        "dominant_failure_distribution": dominant_dist,
+        "dominant_failure_metric": dominant_metric, 
+        "insight": insight
+    }
+
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # Prevent UnicodeEncodeError on Windows terminals
+    if sys.platform.startswith('win'):
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
     test_set = load_test_set_50q()
     print(f"Loaded {len(test_set)} questions")
 
